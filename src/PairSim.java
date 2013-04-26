@@ -30,6 +30,12 @@ public class PairSim extends Configured implements Tool {
  // The threshold on the TV lenghth above which the TVs are consider long
  public static int tvLenBar = 5; 
 
+ // the minimum similarity of a TV pair from the same IP address for long TVs
+ public static double tvSimBarL = 0.7;
+
+ // the minimum simiarity of short TV pairs
+ public static double tvSimBarS = 0.6;
+
  // number of reducers
  public static int reducers = 3000;
 
@@ -40,6 +46,8 @@ public class PairSim extends Configured implements Tool {
       // load parameters
       windowSize = conf.getInt("ipps.windowSize", 3600);
       tvLenBar = conf.getInt("ipps.tvLenBar", 5);
+      tvSimBarL = conf.getFloat("ipps.tvSimBarL", 0.7f);
+      tvSimBarS = conf.getFloat("ipps.tvSimBarS", 0.6f);
     }               
    
     public void reduce(
@@ -51,58 +59,45 @@ public class PairSim extends Configured implements Tool {
 
       // check the paremeters
       sLogger.info("windowSize: " + windowSize);
-      sLogger.info("tvLenBar: " + tvLenBar);
 
-      // Divide the users into two parts: activeUsers and lazyUsers
-      Vector<UserActionProfile> activeUsers = new Vector<UserActionProfile>();
-      Vector<UserActionProfile> lazyUsers = new Vector<UserActionProfile>();
-      String ip = key.toString();
+      Vector<UserActionProfile> userSet = new Vector<UserActionProfile>();
+      String[] keyParts = key.toString().split(",");
+      String ip = keyParts[0];
+      boolean isLazy = keyParts[1].equals("T");
       int userCount = 0;
 
       while(values.hasNext()) {
         UserActionProfile curUser= new UserActionProfile(values.next().toString());
-	if(curUser.getTimeVector().size() >= tvLenBar) // add to activeUsers
-	  activeUsers.addElement(curUser);
-	else lazyUsers.addElement(curUser);
+        userSet.addElement(curUser); // add to the user set
 
         userCount++;
         // report progress
         if(userCount % 100 == 0)
           reporter.progress(); 
       }
+      sLogger.info("total users: " + userCount);
 
-      // compute similarity for lazy users
-      boolean isLazy = true;
-      compute_similarity(lazyUsers, ip, isLazy, output, reporter);
-     
-      // compute similarity for active users
-      isLazy = false;
-      compute_similarity(activeUsers, ip, isLazy, output, reporter);
-    }
-
-    // compute user similarity for a user set
-    public void compute_similarity(Vector<UserActionProfile> userSet, String ip, 
-	boolean isLazy, OutputCollector<NullWritable, Text> output, 
-	Reporter reporter) throws IOException {
+      // compute similarity for the user set
       int pairCount = 0;
       int numUsers = userSet.size();
       for(int i = 0; i < numUsers; i++) {
-	UserActionProfile curUser = userSet.get(i);
-	for(int j = i+1; j < numUsers; j++) {
-	  UserActionProfile toComp = userSet.get(j);
-	  double similarity = VectorUtils.vectorSimilarity(curUser.getTimeVector(),
-		toComp.getTimeVector(), windowSize);
-	  UserPair up = new UserPair(curUser.getID(), toComp.getID(), similarity,
-		ip, isLazy); 
-	  output.collect(NullWritable.get(), new Text(up.toString()));
-
- 	  pairCount++;
-	  if(pairCount % 100 == 0)
-	    reporter.progress();
-	}
+        UserActionProfile curUser = userSet.get(i);
+        for(int j = i+1; j < numUsers; j++) {
+          UserActionProfile toComp = userSet.get(j);
+          double similarity = VectorUtils.vectorSimilarity(curUser.getTimeVector(),
+                toComp.getTimeVector(), windowSize);
+	  if( (similarity >= tvSimBarL && isLazy == false) || (similarity >= tvSimBarS && isLazy == true) ) {
+            UserPair up = new UserPair(curUser.getID(), toComp.getID(), similarity,
+                	ip, isLazy);
+            output.collect(NullWritable.get(), new Text(up.toString()));
+	  }
+          pairCount++;
+          if(pairCount % 100 == 0)
+            reporter.progress();
+        }
       }
+      sLogger.info("user pairs processed: " + pairCount);
     }
-
  }
  
  public int run(String[] args) throws Exception {
@@ -116,7 +111,10 @@ public class PairSim extends Configured implements Tool {
          + "ipps.windowSize\tTime window size to determine if two events happen "
          + "around the same time\n"
          + "ipps.tvLenBar\tMinimum number of actions that a user should have "
-         + "performed, in order to be enrolled into the active user set\n\n"
+         + "performed, in order to be enrolled into the active user set\n"
+         + "ipps.tvSimBarL\tthe minimum similarity of a TV pair from the same "
+         + "IP address for long TVs\n"
+         + "ipps.tvSimBarS\tthe minimum simiarity of short TV pairs\n\n"
 
          + "Input format: uid\tip\ttimevector\n"
          + "timevector format: t1,t2,t3,...\n"
